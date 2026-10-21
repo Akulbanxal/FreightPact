@@ -1,0 +1,27 @@
+# ==============================================================================
+# FreightPact — Pinned Python Dependencies
+# Compatible with Python 3.9+ (tested and verified on Python 3.9 & 3.12)
+# ==============================================================================
+
+# Core Agent Framework & Protocols
+uagents==0.20.1
+cosmpy==0.9.3
+ecdsa==0.19.2
+bech32==1.2.0
+
+# Schema Validation & Settings
+pydantic==2.8.2
+pydantic-core==2.20.1
+python-dotenv==1.2.1
+
+# HTTP & WebSockets
+aiohttp==3.13.5
+uvicorn==0.30.6
+urllib3==1.26.20
+
+# Cryptography & Security
+pycryptodome==3.24.1
+
+# Testing
+pytest==8.4.2
+pytest-asyncio==1.2.0
