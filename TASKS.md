@@ -98,14 +98,13 @@ Status Legend:
   - [x] Build ACP `MetadataContent` with `card_protocol_version: "1"`, `requires_card_interaction: "true"`, `card_kind`, and JSON-stringified `card_payload`.
   - [x] Build `form` card for missing incident constraint intake.
   - [x] Build `carousel` card for candidate carrier quote comparison.
-  - [x] Build `detail` card for telemetry verification failure with actual rejection reasons.
+  - [x] Build `detail` card for recovery overview and telemetry verification evidence.
   - [x] Build `review` card for final recommendation requiring explicit operator confirmation (`confirm_award` / `reject_award`).
   - [x] Enforce payload limits (<= 64 KB, max depth 8).
   - [x] Implement plain-text markdown fallback for unsupported clients or schema errors.
   - [x] Server-side validation and untrusted action parsing (`parse_card_user_response`).
 - [x] Test card serialization, schema validation, payload limits, and action handling in `tests/test_cards.py`.
 - [x] Wire card generation and action dispatch into ACP protocol in `src/freightpact/chat_interface.py`.
-- [x] Document manual visual card testing procedure in `docs/AGENTVERSE_SETUP.md` (Note: Visual rendering in live browser remains unverified until operator manually tests in ASI:One UI).
 
 ---
 
@@ -113,7 +112,7 @@ Status Legend:
 - [x] Wire complete local multi-agent system (`src/freightpact/demo.py`).
 - [x] Test happy path (Beta rejected due to telemetry -> failover to Alpha -> final recommendation).
 - [x] Test full failure path (all candidates exceed budget/fail audit -> terminal `NO_SAFE_MATCH`).
-- [x] Add single demo run script / command (`.venv/bin/python -m freightpact.demo`).
+- [x] Add single demo run script / command (`python -m freightpact.demo`).
 - [x] End-to-end automated tests in `tests/test_end_to_end.py`.
 
 ---
@@ -132,26 +131,41 @@ Status Legend:
 - [x] Cryptographic verification: constant-time signature comparison (`hmac.compare_digest`), nonce replay tracking, timestamp freshness windows.
 - [x] Privacy & log scrubbing: automated regex masking of seeds, secrets, tokens, and keys in `freightpact.audit`.
 - [x] Confirm no claims of real hardware attestation, physical vehicle dispatch, or live escrow (`tests/test_security_audit.py`).
-- [ ] **Live Integration Checkpoint:** Live Agentverse registration and ASI:One web interaction *(PENDING — intentionally postponed for manual operator execution)*.
+- [ ] **Live Integration Checkpoint:** Live Agentverse registration and ASI:One web interaction *(PENDING — manual operator execution)*.
 
 ---
 
 ## Phase 11: Presentation & UI Polish
-- [x] Polish Interactive Card layouts and styling to match enterprise logistics standards (restrained navy/white/indigo, green for verified safe, red for rejected, amber for waiting).
-- [x] Ensure clear visual distinction between verified status (green `🟢`), rejected status (red `🔴`), and out-of-bounds/waiting (amber `🟡`).
-- [ ] Manual visual verification in live ASI:One web interface (PENDING: live Agentverse/ASI:One credentials and manual test checkpoint postponed; cards conform strictly to official schema and fallbacks provide clear markdown).
+- [x] Polish Interactive Card layouts using universal predefined schemas (`detail`, `carousel`, `review`).
+- [x] Ensure clear visual distinction between verified status (green `🟢`), rejected status (red `🔴`), and candidate screening.
+- [x] Eliminate circular overview navigation by directing confirmed actions to final receipts.
+- [x] Concise professional briefing text replacing verbose duplicated markdown dumps.
 
 ---
 
-## Phase 12: README, Demo Script & Submission Pack
-- [x] Write `README.md` with official hackathon badges, architecture diagram, and quickstart commands.
-- [x] Create `docs/DEMO_SCRIPT.md` (3-5 min presentation script).
-- [x] Create `docs/SUBMISSION_CHECKLIST.md` mapping hackpack requirements to project artifacts.
-- [x] Create `docs/TROUBLESHOOTING.md`.
+## Phase 12: Historical Research Dataset Validation
+- [x] Integrate real-world thermal dataset: *Long-range freeze-preventive vaccine carriers in Nepal* (Mendeley Data, DOI: 10.17632/j277dvs69g.1, CC BY 4.0).
+- [x] Implement deterministic, phase-aware equipment classification for 526 CSV log files across Phases 1a, 1b, and 2.
+- [x] Implement CSV parsers for formats A, B, and C with operational marker retention and missing record exclusion.
+- [x] Implement independent freeze (<0°C) and heat (>10°C) excursion episode detection with duration math.
+- [x] Reconcile 526 file inventory: 167 PVC, 118 SVC, 74 Freezers, 166 Ambient, 1 explicitly identified Unknown file.
+- [x] Empirically calculate PVC vs SVC compliance and audit sub-zero incidents (5 PVC files with sub-zero readings).
+- [x] Automated unit and cohort reconciliation tests in `tests/test_historical_validator.py`.
+- [x] Standalone validation CLI tool: `tools/validate_nepal_thermal.py`.
 
 ---
 
-## Phase 13: Final Acceptance Audit
-- [ ] Run full test suite (`pytest -v`).
-- [ ] Judge-style review of all deliverables against the official hackpack rubric.
-- [ ] Final verification of URLs and disclosures.
+## Phase 13: README, Documentation & Submission Pack
+- [x] Overhaul `README.md` with official hackathon badges (`![tag:innovationlab]`, `![tag:hackathon]`), architecture diagram, full test table, dataset provenance, and setup guides.
+- [x] Align `docs/AGENTVERSE_SETUP.md` with coordinator address `agent1q23pcy5gumdt6jv7985mnwtqwca9j2evj5qm0y3q76p6e4t7hyxdcsphnm3`.
+- [x] Update `IMPLEMENTATION.md` and `TASKS.md` with current codebase state.
+- [x] Keep `.env` and `data/` strictly untracked in `.gitignore`.
+
+---
+
+## Phase 14: Final Acceptance Audit
+- [x] Run full automated test suite: 98 passed in ~63s (`python -m pytest tests -v`).
+- [x] Verify git status: clean working tree, zero committed secrets, zero untracked runtime artifacts.
+- [ ] `TODO`: Operator exports public Shared Chat URL from live ASI:One session.
+- [ ] `TODO`: Operator copies Agentverse profile URL.
+- [ ] `TODO`: Operator records and uploads 3-minute video walkthrough.

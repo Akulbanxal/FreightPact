@@ -1,10 +1,10 @@
 # Agentverse Setup & ASI:One Onboarding Guide
 
-This document provides the exact, verified manual onboarding procedure to register the primary **FreightPact Recovery Coordinator** on Fetch.ai Agentverse and test end-to-end conversation via ASI:One or the Agentverse web chat interface.
+This document provides the verified manual onboarding procedure to register the primary **FreightPact Recovery Coordinator** on Fetch.ai Agentverse and test end-to-end conversation via ASI:One or the Agentverse web chat interface.
 
 > [!IMPORTANT]
 > **Zero-Secret Commitment & Real Verification Rule:**
-> - Never paste your mnemonic seed phrases, Agentverse API keys, or ASI:One API keys into chat or git.
+> - Never paste mnemonic seed phrases, Agentverse API keys, or ASI:One API keys into chat or git.
 > - Keep all secrets strictly in your local `.env` file.
 > - Do not invent agent addresses, profile URLs, or shared chat links. Placeholders are clearly marked until you execute the manual steps below.
 > - The primary workflow is considered **unverified in ASI:One** until the manual web test is confirmed by the human operator.
@@ -23,19 +23,19 @@ You must create or configure the following yourself (automated tools cannot and 
    - Generate a new API key.
 3. **Local Environment Variables:**
    - In your local project directory, copy `.env.example` to `.env`:
-     ```bash
-     cp .env.example .env
+     ```powershell
+     Copy-Item .env.example .env
      ```
    - Edit `.env` and set:
-     ```bash
+     ```ini
      COORDINATOR_SEED="<your_secure_unique_coordinator_mnemonic_seed>"
      AGENTVERSE_API_KEY="<your_agentverse_api_token>"
      HMAC_FIXTURE_SECRET="<your_secret_signing_key_at_least_8_chars>"
      ```
    > [!TIP]
    > You can inspect your deterministic coordinator agent address before registering by running:
-   > ```bash
-   > .venv/bin/python -m freightpact.run_coordinator --info
+   > ```powershell
+   > python -m freightpact.run_coordinator --info
    > ```
 
 ---
@@ -59,8 +59,8 @@ The simplest, official route is the **Mailbox Agent**.
 
 ### Step 2: Run the Coordinator Locally in Mailbox Mode
 Start the primary coordinator connected to your mailbox:
-```bash
-.venv/bin/python -m freightpact.run_coordinator --mailbox
+```powershell
+python -m freightpact.run_coordinator --mailbox
 ```
 
 **Expected Startup Output:**
@@ -69,7 +69,7 @@ Start the primary coordinator connected to your mailbox:
 🚀 STARTING FREIGHTPACT RECOVERY COORDINATOR AGENT
 ==============================================================================
 Agent Name:    recovery_coordinator
-Agent Address: agent1qd4x548g8ur7paxuegsy7wzcnxq6tremct95zz8ujexcggj8fxnevdnvcrz
+Agent Address: agent1q23pcy5gumdt6jv7985mnwtqwca9j2evj5qm0y3q76p6e4t7hyxdcsphnm3
 Mode:          Agentverse Mailbox (polling Agentverse for incoming ACP messages)
 Requirement:   Ensure this address is registered on Agentverse as a Mailbox agent.
 ==============================================================================
@@ -82,7 +82,7 @@ INFO: [recovery_coordinator]: Starting mailbox client for https://agentverse.ai
 3. Check the status indicator: it should turn **Green (Online / Active)**.
 4. Open the agent's details page.
 5. Record your real values in Section 5 below:
-   - Copy the **Agent Address** (e.g. `agent1q...`).
+   - Copy the **Agent Address** (`agent1q23pcy5gumdt6jv7985mnwtqwca9j2evj5qm0y3q76p6e4t7hyxdcsphnm3`).
    - Copy the **Agentverse Profile URL** from the browser address bar.
 
 ### Step 4: Verify Agent Chat Protocol (ACP) Manifest
@@ -97,7 +97,8 @@ INFO: [recovery_coordinator]: Starting mailbox client for https://agentverse.ai
 Once your coordinator agent is online, execute the following manual tests.
 
 ### Test 1: Intake Prompt on Incomplete Incident
-1. Open the agent's **Chat** tab in Agentverse or search for the coordinator address in [ASI:One](https://asi1.ai).
+1. Open the agent's **Chat** tab in Agentverse or search for the coordinator address in [ASI:One](https://asi1.ai):
+   `agent1q23pcy5gumdt6jv7985mnwtqwca9j2evj5qm0y3q76p6e4t7hyxdcsphnm3`
 2. Send an incomplete incident message:
    ```text
    Shipment VAX-8821 breakdown near Gurugram
@@ -124,15 +125,15 @@ Once your coordinator agent is online, execute the following manual tests.
    - Telemetry Auditor returns **PASS** (4.2°C, compressor active, valid HMAC signature).
    - Coordinator finalizes run state as `RECOMMENDED_FOR_CONFIRMATION`.
 3. **Verify Output in ASI:One / Agentverse UI:**
-   - Complete Markdown report with evaluated quotes, audit rejection details, and recommendation.
-   - Interactive Review Card rendered with `Confirm & Dispatch Carrier` and `Decline Recommendation` CTAs.
-   - Explicit disclosure: `SIMULATION — awaiting user confirmation`.
+   - Concise professional briefing text with evaluated quotes and audit rejection details.
+   - Interactive Overview & Review Cards rendered with `Compare Candidates`, `Inspect Telemetry`, and `Review Dispatch Award` CTAs.
+   - Explicit simulation disclosure: `Simulation — awaiting user confirmation`.
 
 ### Test 3: Confirm Award Action Return
-1. Click **Confirm & Dispatch Carrier** on the interactive review card (or type `Confirm dispatch`).
+1. Click **Review Dispatch Award** and then **Confirm Simulated Dispatch** on the interactive card (or type `Confirm dispatch`).
 2. **Verify Response:**
    - Coordinator validates the action server-side.
-   - Returns confirmation message:
+   - Returns confirmation message and receipt card:
      ```text
      🎉 Carrier Award Confirmed & Dispatched!
      - Shipment ID: VAX-8821
@@ -160,9 +161,9 @@ Fill in these placeholders once you complete the steps above. Do not commit actu
 
 | Item | Value / Placeholder | Status |
 |---|---|---|
-| **Primary Coordinator Address** | `agent1qd4x548g8ur7paxuegsy7wzcnxq6tremct95zz8ujexcggj8fxnevdnvcrz` *(default demo seed)* or `<YOUR_LOCAL_COORDINATOR_ADDRESS>` | Derived from local seed |
-| **Agentverse Profile URL** | `https://agentverse.ai/agents/details/<YOUR_AGENT_UUID>` | ⏳ Awaiting manual operator registration |
-| **ASI:One Shared Chat URL** | `https://asi1.ai/chat/share/<YOUR_SHARED_CHAT_ID>` | ⏳ Awaiting manual operator execution |
+| **Primary Coordinator Address** | `agent1q23pcy5gumdt6jv7985mnwtqwca9j2evj5qm0y3q76p6e4t7hyxdcsphnm3` | Active Deterministic Identity |
+| **Agentverse Profile URL** | `TODO: https://agentverse.ai/agents/details/<YOUR_AGENT_UUID>` | ⏳ Awaiting manual operator registration |
+| **ASI:One Shared Chat URL** | `TODO: https://asi1.ai/chat/share/<YOUR_SHARED_CHAT_ID>` | ⏳ Awaiting manual operator execution |
 | **End-to-End Workflow Status** | ⏳ **Unverified in live ASI:One** until operator completes manual web test | Documented |
 
 ---
@@ -172,7 +173,7 @@ Fill in these placeholders once you complete the steps above. Do not commit actu
 ### Issue 1: "Agent mailbox not found: create one using the agent inspector"
 - **Cause:** The agent address running locally does not match the mailbox created on Agentverse, or the mailbox was deleted.
 - **Recovery:**
-  1. Run `.venv/bin/python -m freightpact.run_coordinator --info` and note the `Coordinator Agent Address`.
+  1. Run `python -m freightpact.run_coordinator --info` and note the `Coordinator Agent Address`.
   2. On Agentverse, create a new Mailbox agent with that exact address, or update `COORDINATOR_SEED` in `.env` to match the seed phrase of the mailbox you created.
 
 ### Issue 2: "Failed to connect to mailbox server: ClientConnectorError"
@@ -193,13 +194,16 @@ Fill in these placeholders once you complete the steps above. Do not commit actu
 
 To verify that the coordinator agent, internal protocols, and card envelopes are completely functional before going live:
 
-```bash
-# 1. Run full automated test suite (63 tests)
-.venv/bin/pytest tests/ -v
+```powershell
+# 1. Run full automated test suite (98 tests)
+python -m pytest tests -v
 
 # 2. Run standalone local multi-agent simulation demo
-.venv/bin/python -m freightpact.demo
+python -m freightpact.demo
 
 # 3. Print coordinator agent address and identity info
-.venv/bin/python -m freightpact.run_coordinator --info
+python -m freightpact.run_coordinator --info
+
+# 4. Run historical Nepal vaccine carrier validator
+python tools/validate_nepal_thermal.py
 ```
