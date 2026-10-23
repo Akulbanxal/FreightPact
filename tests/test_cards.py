@@ -10,6 +10,8 @@ from freightpact.cards import (
     MAX_PAYLOAD_BYTES,
     build_audit_failure_detail_card,
     build_card_metadata_envelope,
+    build_dispatch_confirmation_card,
+    build_dispatch_declination_card,
     build_final_recommendation_review_card,
     build_incident_intake_form_card,
     build_quote_comparison_carousel_card,
@@ -335,3 +337,75 @@ def test_interactive_chat_message_with_card():
     assert isinstance(msg.content[0], TextContent)
     assert isinstance(msg.content[1], MetadataContent)
     assert msg.content[1].metadata["card_kind"] == "form"
+
+def test_observed_incident_message_not_misclassified_as_card_action():
+    """Regression test: User query containing 'carriers' and 'recommend' must NOT be hijacked as a card action."""
+    observed_text = (
+        "Hi, I need an urgent replacement for vaccine shipment VAX-8821 near Sector 18, Gurugram. "
+        "The required temperature range is 2–8°C, the maximum budget is ₹48,000, and the deadline is 45 minutes. "
+        "Please evaluate available carriers and recommend a safe replacement."
+    )
+    action, data = parse_card_user_response(observed_text)
+    assert action is None
+    assert data["raw_text"] == observed_text
+
+    # With leading agent mention
+    mentioned_text = "@agent1q2jv8khzjg4ycngm5zk5e8mkad774ptja3ufjfwjujwu9x5scexu6pu82ja " + observed_text
+    action_m, _ = parse_card_user_response(mentioned_text)
+    assert action_m is None
+
+
+def test_dispatch_confirmation_card_shape(sample_request, sample_offers):
+    from freightpact.states import RunContext, WorkflowState
+    run_ctx = RunContext(sample_request)
+    run_ctx.offers = sample_offers
+    run_ctx.selected_offer = sample_offers[0]  # carrier_beta
+    run_ctx.transition_to(WorkflowState.VALIDATED)
+    run_ctx.transition_to(WorkflowState.COLLECTING_QUOTES)
+    run_ctx.transition_to(WorkflowState.RANKING)
+    run_ctx.transition_to(WorkflowState.VERIFYING_CANDIDATE)
+    run_ctx.transition_to(WorkflowState.RECOMMENDED_FOR_CONFIRMATION)
+
+    card = build_dispatch_confirmation_card(run_ctx)
+    assert isinstance(card, MetadataContent)
+    assert card.metadata["card_kind"] == "detail"
+    assert card.metadata["is_terminal"] == "true"
+    assert card.metadata["requires_card_interaction"] == "true"
+
+    payload = json.loads(card.metadata["card_payload"])
+    assert "is_terminal" not in payload
+    assert "title" in payload
+    assert "Dispatched" in payload["title"] or "Receipt" in payload["title"]
+    assert "summary_rows" in payload
+    labels = {r["label"]: r["value"] for r in payload["summary_rows"]}
+    assert "Shipment ID" in labels
+    assert "VAX-8821" in labels["Shipment ID"]
+    assert "Awarded Carrier" in labels
+    assert "Simulation Disclosure" in labels
+    assert "SIMULATION" in labels["Simulation Disclosure"]
+
+
+def test_dispatch_declination_card_shape(sample_request, sample_offers):
+    from freightpact.states import RunContext
+    run_ctx = RunContext(sample_request)
+    run_ctx.offers = sample_offers
+    run_ctx.selected_offer = sample_offers[1]  # carrier_alpha
+
+    card = build_dispatch_declination_card(run_ctx, carrier_id="carrier_alpha")
+    assert isinstance(card, MetadataContent)
+    assert card.metadata["card_kind"] == "detail"
+    assert card.metadata["is_terminal"] == "true"
+    assert card.metadata["requires_card_interaction"] == "true"
+
+    payload = json.loads(card.metadata["card_payload"])
+    assert "is_terminal" not in payload
+    assert "Declined" in payload["title"]
+    assert "summary_rows" in payload
+    labels = {r["label"]: r["value"] for r in payload["summary_rows"]}
+    assert "Shipment ID" in labels
+    assert "VAX-8821" in labels["Shipment ID"]
+    assert "Declined Carrier" in labels
+    assert "carrier_alpha" in labels["Declined Carrier"]
+    assert "Status" in labels
+    assert "Simulation Disclosure" in labels
+

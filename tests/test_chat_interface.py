@@ -135,6 +135,7 @@ def test_format_recovery_response_includes_failover_and_disclosure():
     assert "Simulation Disclosure" in report
     assert "SIMULATION — awaiting user confirmation" in report
     assert "actual physical vehicle dispatch" in report
+    assert "[!NOTE]" not in report
 
 
 @pytest.mark.asyncio
@@ -338,10 +339,136 @@ async def test_acp_chat_handler_navigation_actions_round_trip():
     await msg_handler(mock_ctx, "user", confirm_msg)
     reply_conf = mock_ctx.sent_messages[1][1]
     assert "Simulated Carrier Award Confirmed" in reply_conf.text()
+    assert "[!NOTE]" not in reply_conf.text()
     assert getattr(run_ctx, "is_confirmed", False) is True
+    # Verify receipt card is attached
+    assert len(reply_conf.content) == 2
+    assert reply_conf.content[1].metadata["card_kind"] == "detail"
+    assert reply_conf.content[1].metadata["is_terminal"] == "true"
+    assert reply_conf.content[1].metadata["requires_card_interaction"] == "true"
 
     # Repeat Confirm Award (Idempotent call)
     mock_ctx2 = MockContext()
     await msg_handler(mock_ctx2, "user", confirm_msg)
     reply_conf2 = mock_ctx2.sent_messages[1][1]
     assert "Simulated Carrier Award Already Confirmed" in reply_conf2.text()
+    assert "[!NOTE]" not in reply_conf2.text()
+    assert len(reply_conf2.content) == 2
+    assert reply_conf2.content[1].metadata["card_kind"] == "detail"
+    assert reply_conf2.content[1].metadata["requires_card_interaction"] == "true"
+
+    # Test Reject Award & Declination Receipt Card
+    mock_ctx3 = MockContext()
+    reject_msg = create_text_chat_message(json.dumps({"action": "reject_award", "carrier_id": "carrier_alpha", "run_id": req.run_id}))
+    await msg_handler(mock_ctx3, "user", reject_msg)
+    reply_decl = mock_ctx3.sent_messages[1][1]
+    assert "Simulated Carrier Recommendation Declined" in reply_decl.text()
+    assert "[!NOTE]" not in reply_decl.text()
+    assert len(reply_decl.content) == 2
+    assert reply_decl.content[1].metadata["card_kind"] == "detail"
+    assert reply_decl.content[1].metadata["is_terminal"] == "true"
+    assert reply_decl.content[1].metadata["requires_card_interaction"] == "true"
+
+    # Test View Mission Overview from Confirmation Receipt (Requirement 5)
+    # Ensure it returns the overview once without recursive review loop action
+    mock_ctx4 = MockContext()
+    overview_msg = create_text_chat_message(json.dumps({"action": "view_incident_overview", "run_id": req.run_id}))
+    await msg_handler(mock_ctx4, "user", overview_msg)
+    reply_ov = mock_ctx4.sent_messages[1][1]
+    assert "Incident Overview" in reply_ov.text()
+    assert len(reply_ov.content) == 2
+    assert reply_ov.content[1].metadata["card_kind"] == "detail"
+    payload_ov = json.loads(reply_ov.content[1].metadata["card_payload"])
+    ov_actions = [cta["selection"]["action"] for cta in payload_ov.get("ctas", [])]
+    assert "view_award_review" not in ov_actions
+    assert "view_incident_overview" not in ov_actions
+    assert "view_carrier_comparison" in ov_actions
+    ov_labels = {r["label"]: r["value"] for r in payload_ov["summary_rows"]}
+    assert "Simulated Award Confirmed" in ov_labels["Current Status"]
+
+def test_observed_incident_message_parsing_and_field_extraction():
+    """Regression test: Verifies exact field extraction for the user's reported live incident message."""
+    raw_text = (
+        "Hi, I need an urgent replacement for vaccine shipment VAX-8821 near Sector 18, Gurugram. "
+        "The required temperature range is 2–8°C, the maximum budget is ₹48,000, and the deadline is 45 minutes. "
+        "Please evaluate available carriers and recommend a safe replacement."
+    )
+    parsed = parse_incident_fallback(raw_text)
+    assert parsed.get("shipment_id") == "VAX-8821"
+    assert parsed.get("cargo_class") == CargoClass.VACCINES
+    assert parsed.get("temp_min_c") == 2.0
+    assert parsed.get("temp_max_c") == 8.0
+    assert parsed.get("max_budget") == 48000.0
+    assert parsed.get("deadline_minutes") == 45
+    assert parsed.get("origin_location") == "Sector 18, Gurugram"
+
+    req, prompt = validate_or_request_missing_fields(parsed)
+    assert prompt is None
+    assert req is not None
+    assert req.shipment_id == "VAX-8821"
+    assert req.temp_min_c == 2.0
+    assert req.temp_max_c == 8.0
+    assert req.max_budget == 48000.0
+    assert req.deadline_minutes == 45
+    assert req.origin_location == "Sector 18, Gurugram"
+
+    # Test with leading Agentverse mention
+    mentioned_text = "@agent1q2jv8khzjg4ycngm5zk5e8mkad774ptja3ufjfwjujwu9x5scexu6pu82ja " + raw_text
+    parsed_m = parse_incident_fallback(mentioned_text)
+    assert parsed_m.get("shipment_id") == "VAX-8821"
+    assert parsed_m.get("deadline_minutes") == 45
+    assert parsed_m.get("max_budget") == 48000.0
+    assert parsed_m.get("temp_min_c") == 2.0
+    assert parsed_m.get("temp_max_c") == 8.0
+
+
+@pytest.mark.asyncio
+async def test_observed_incident_message_triggers_recovery_not_mission_not_found():
+    """Regression test: Verifies that receiving the user's incident with no active missions initiates recovery."""
+    from freightpact.chat_interface import create_acp_chat_protocol
+    from freightpact.coordinator_agent import CoordinatorOrchestrator
+    from freightpact.storage import StorageRepository
+    from uagents_core.contrib.protocols.chat import MetadataContent
+
+    orchestrator = CoordinatorOrchestrator(
+        auditor_address="auditor",
+        carrier_addresses={"carrier_alpha": "alpha"},
+        storage=StorageRepository(":memory:"),
+        quote_timeout_seconds=0.1,
+    )
+    # Ensure initially empty runs
+    assert len(orchestrator.runs) == 0
+
+    proto = create_acp_chat_protocol(orchestrator)
+    msg_handler = proto._signed_message_handlers[ChatMessage.build_schema_digest(ChatMessage)]
+
+    class MockContext:
+        def __init__(self):
+            self.logger = type("L", (), {"info": lambda *a: None, "warning": lambda *a: None, "error": lambda *a: None})()
+            self.sent_messages = []
+
+        async def send(self, destination, message):
+            self.sent_messages.append((destination, message))
+
+    mock_ctx = MockContext()
+    raw_text = (
+        "Hi, I need an urgent replacement for vaccine shipment VAX-8821 near Sector 18, Gurugram. "
+        "The required temperature range is 2–8°C, the maximum budget is ₹48,000, and the deadline is 45 minutes. "
+        "Please evaluate available carriers and recommend a safe replacement."
+    )
+    user_msg = create_text_chat_message(raw_text)
+    await msg_handler(mock_ctx, "user_address_123", user_msg)
+
+    # Must NOT reply with 'Mission Not Found'
+    assert len(mock_ctx.sent_messages) >= 2
+    reply = mock_ctx.sent_messages[-1][1]
+    assert isinstance(reply, ChatMessage)
+    assert "Mission Not Found" not in reply.text()
+    assert "FreightPact Cold-Chain Recovery Report" in reply.text()
+    assert "VAX-8821" in reply.text()
+
+    # Must attach overview card
+    card_contents = [c for c in reply.content if isinstance(c, MetadataContent)]
+    assert len(card_contents) == 1
+    assert card_contents[0].metadata["card_kind"] == "detail"
+

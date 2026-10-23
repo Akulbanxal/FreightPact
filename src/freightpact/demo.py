@@ -32,6 +32,11 @@ from freightpact.storage import StorageRepository
 
 
 async def run_demo():
+    if sys.platform == "win32":
+        try:
+            sys.stdout.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
     print("=" * 80)
     print("🚀 STARTING FREIGHTPACT LOCAL MULTI-AGENT DEMONSTRATION")
     print("=" * 80)

@@ -422,6 +422,7 @@ def create_coordinator_agent(
     include_chat: bool = True,
     mailbox: bool = False,
     endpoint: Optional[Any] = None,
+    report_events: bool = False,
 ) -> Agent:
     """Instantiates the primary Recovery Coordinator agent."""
     if endpoint is not None:
@@ -440,6 +441,7 @@ def create_coordinator_agent(
         endpoint=agent_endpoint,
         mailbox=mailbox,
         handle_messages_concurrently=True,
+        report_events=report_events,
     )
     internal_proto = create_coordinator_protocol(orchestrator)
     agent.include(internal_proto)

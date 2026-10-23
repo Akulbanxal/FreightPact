@@ -120,20 +120,22 @@ async def parse_incident_with_asi1(text: str, api_key: str) -> Optional[Dict[str
 def parse_incident_fallback(text: str) -> Dict[str, Any]:
     """Deterministic regex and keyword extractor for shipment incidents."""
     data: Dict[str, Any] = {}
+    from freightpact.cards import strip_agent_mention
+    text = strip_agent_mention(text)
 
-    # 1. Temperature band: e.g. "2°C to 8°C", "2C - 8C", "band: 2 to 8 C", "temp: 2 to 8"
+    # 1. Temperature band: e.g. "2°C to 8°C", "2C - 8C", "band: 2 to 8 C", "temp: 2 to 8", "range is 2–8°C"
     temp_pattern = (
-        r"(?:temp(?:erature)?|band|range)?[:\s]*"
+        r"(?:temp(?:erature)?|band|range)?\s*(?:is|of|between|from|within)?[:\s]*"
         r"([+-]?\d+(?:\.\d+)?)\s*(?:°?\s*C)?\s*"
-        r"(?:to|[-–]|until)\s*"
+        r"(?:to|[-–—]|until|and)\s*"
         r"([+-]?\d+(?:\.\d+)?)\s*(?:°?\s*C|\b)"
     )
-    # Prefer matches that include °C or 'temp' keyword
+    # Prefer matches that include °C or 'temp' keyword or dash/to
     temp_matches = list(re.finditer(temp_pattern, text, re.IGNORECASE))
     chosen_match = None
     for tm in temp_matches:
         full_span = tm.group(0).lower()
-        if "c" in full_span or "temp" in full_span or "band" in full_span or "to" in full_span:
+        if "c" in full_span or "temp" in full_span or "band" in full_span or "to" in full_span or "–" in full_span or "—" in full_span:
             chosen_match = tm
             break
     if not chosen_match and temp_matches:
@@ -147,8 +149,10 @@ def parse_incident_fallback(text: str) -> Dict[str, Any]:
         except (ValueError, IndexError):
             pass
 
-    # 2. Budget: e.g. "budget 48000", "max budget: ₹48,000", "₹48000"
-    budget_pattern = r"(?:budget|cost|ceiling)[:\s]*(?:₹|rs\.?|inr)?\s*([0-9]+(?:,[0-9]+)*(?:\.[0-9]+)?)"
+    # 2. Budget: e.g. "budget 48000", "max budget: ₹48,000", "the maximum budget is ₹48,000", "₹48000"
+    budget_pattern = (
+        r"(?:budget|cost|ceiling)\s*(?:is|of|ceiling)?[:\s]*(?:₹|rs\.?|inr)?\s*([0-9]+(?:,[0-9]+)*(?:\.[0-9]+)?)"
+    )
     budget_match = re.search(budget_pattern, text, re.IGNORECASE)
     if budget_match:
         try:
@@ -163,19 +167,28 @@ def parse_incident_fallback(text: str) -> Dict[str, Any]:
             except ValueError:
                 pass
 
-    # 3. Deadline: e.g. "deadline 45 min", "within 45 mins", "45 minutes"
-    deadline_pattern = r"(?:deadline|within|in)[:\s]*([0-9]+)\s*(?:min|mins|minutes)?"
+    # 3. Deadline: e.g. "deadline 45 min", "within 45 mins", "the deadline is 45 minutes", "45 minutes"
+    deadline_pattern = (
+        r"(?:deadline|within|timeframe|eta|window)\s*(?:is|of)?[:\s]*([0-9]+)\s*(?:min|mins|minutes|m\b)?"
+    )
     deadline_match = re.search(deadline_pattern, text, re.IGNORECASE)
     if deadline_match:
         try:
             data["deadline_minutes"] = int(deadline_match.group(1))
         except ValueError:
             pass
+    elif "deadline" in text.lower() or "within" in text.lower():
+        min_match = re.search(r"\b([0-9]+)\s*(?:min|mins|minutes)\b", text, re.IGNORECASE)
+        if min_match:
+            try:
+                data["deadline_minutes"] = int(min_match.group(1))
+            except ValueError:
+                pass
 
     # 4. Shipment ID: e.g. "shipment VAX-8821", "VAX-8821", "ID: VAX-8821"
     shipment_pattern = r"(?:shipment|tracking|id)[:\s]*([a-zA-Z0-9\-_]+)"
     shipment_match = re.search(shipment_pattern, text, re.IGNORECASE)
-    if shipment_match and shipment_match.group(1).upper() not in {"IS", "AT", "THE", "OF"}:
+    if shipment_match and shipment_match.group(1).upper() not in {"IS", "AT", "THE", "OF", "FOR", "NEAR"}:
         data["shipment_id"] = shipment_match.group(1).upper()
     else:
         code_match = re.search(r"\b([A-Z]{2,6}-[0-9]{3,6})\b", text)
@@ -206,17 +219,21 @@ def parse_incident_fallback(text: str) -> Dict[str, Any]:
     elif "chemical" in text_lower:
         data["cargo_class"] = CargoClass.PHARMA_GENERAL
 
-    # 7. Origin location extract (simple heuristic)
-    origin_pattern = r"(?:at|near|location|origin)[:\s]+([^,.\n]+)"
+    # 7. Origin location extract (handles comma-separated hubs like Sector 18, Gurugram)
+    origin_pattern = r"(?:at|near|location|origin|hub)[:\s]+([^.!?\r\n]+)"
     orig_match = re.search(origin_pattern, text, re.IGNORECASE)
     if orig_match:
         loc = orig_match.group(1).strip()
-        loc = re.sub(r"\b(?:temp|temperature|budget|deadline|with|urgently|carrying)\b.*$", "", loc, flags=re.IGNORECASE).strip()
+        loc = re.sub(
+            r"\b(?:the\s+required|target|temp|temperature|budget|deadline|max|with|urgently|carrying)\b.*$",
+            "",
+            loc,
+            flags=re.IGNORECASE,
+        ).strip(" ,.-")
         if loc and len(loc) > 2:
             data["origin_location"] = loc
 
     return data
-
 
 def validate_or_request_missing_fields(data: Dict[str, Any]) -> Tuple[Optional[RecoveryRequest], Optional[str]]:
     """Validates extracted parameters.
@@ -284,110 +301,60 @@ def format_recovery_response(
     run_ctx: Any,
     terminal_result: RecoveryResult,
 ) -> str:
-    """Formats a dense, restrained enterprise logistics operations report for ASI:One."""
+    """Formats a concise, professional executive logistics briefing for ASI:One chat narration."""
     status_icon = "🟢" if terminal_result.terminal_state == "RECOMMENDED_FOR_CONFIRMATION" else "🔴"
-    status_text = (
-        "CANDIDATE AUDITED & VERIFIED (AWAITING OPERATOR CONFIRMATION)"
-        if terminal_result.terminal_state == "RECOMMENDED_FOR_CONFIRMATION"
-        else f"{terminal_result.terminal_state}"
-    )
 
-    # A. Incident Overview
     lines = [
         f"### {status_icon} FreightPact Cold-Chain Recovery Report",
-        f"**Shipment ID:** `{request.shipment_id}` ({request.cargo_class.value}) · **Mission Run ID:** `{request.run_id}`",
-        f"**Required Band:** `+{request.temp_min_c:.1f}°C to +{request.temp_max_c:.1f}°C` · **Budget Ceiling:** `₹{request.max_budget:,.0f} INR` · **Deadline:** `{request.deadline_minutes} mins`",
+        f"**Shipment ID:** `{request.shipment_id}` ({request.cargo_class.value}) · **Target:** `+{request.temp_min_c:.1f}°C to +{request.temp_max_c:.1f}°C` · **Budget:** `₹{request.max_budget:,.0f} INR` · **Deadline:** `{request.deadline_minutes} mins`\n",
     ]
 
-    # Prominent outcome summary
-    if terminal_result.terminal_state == "RECOMMENDED_FOR_CONFIRMATION" and run_ctx.selected_offer:
-        lines.append(
-            f"**Mission Status:** 🟢 **RECOVERY CANDIDATE VERIFIED & RECOMMENDED** (`{run_ctx.selected_offer.carrier_name}`)\n"
-        )
-    elif terminal_result.terminal_state == "NO_SAFE_MATCH":
-        lines.append(
-            f"**Mission Status:** 🔴 **NO COMPLIANT CARRIER AVAILABLE**\n"
-        )
-    else:
-        lines.append(f"**Mission Status:** `{status_text}`\n")
-
-    # B. Carrier Comparison
-    lines.append("#### A. Carrier Quotes & Constraint Screening")
+    # Candidate Screening & Telemetry Verification Summary
+    lines.append("**Candidate Screening & Telemetry Verification:**")
     if run_ctx.offers:
         for offer in run_ctx.offers:
-            is_viable_temp = (
-                offer.supported_temp_min_c <= request.temp_min_c
-                and offer.supported_temp_max_c >= request.temp_max_c
-            )
-            is_viable_budget = offer.price <= request.max_budget
-            is_viable_deadline = offer.eta_minutes <= request.deadline_minutes
-            is_eligible = is_viable_temp and is_viable_budget and is_viable_deadline
+            cid = offer.carrier_id
+            name = offer.carrier_name
+            quote_str = f"₹{offer.price:,.0f} INR · {offer.eta_minutes}m ETA"
 
-            tag = "🟢 [ELIGIBLE]" if is_eligible else "🟡 [OUT-OF-BOUNDS]"
-            lines.append(
-                f"- {tag} **{offer.carrier_name}** (`{offer.carrier_id}`)\n"
-                f"  Quote: **₹{offer.price:,.0f} INR** · ETA: **{offer.eta_minutes}m** · "
-                f"Operating Band: `[{offer.supported_temp_min_c:+.1f}°C to {offer.supported_temp_max_c:+.1f}°C]` · Payload: `{offer.capacity_kg:,.0f} kg`"
-            )
+            if run_ctx.selected_offer and cid == run_ctx.selected_offer.carrier_id:
+                lines.append(
+                    f"- 🟢 **VERIFIED `{cid}`** — {name} ({quote_str} · Verified Safe)"
+                )
+            elif cid in getattr(run_ctx, "rejected_candidate_ids", []):
+                reason = run_ctx.rejection_reasons.get(cid, "Failed telemetry audit")
+                lines.append(
+                    f"- 🔴 **REJECTED `{cid}`** — {name} ({quote_str} · {reason})"
+                )
+            else:
+                lines.append(
+                    f"- 🟡 **STANDBY RESERVE `{cid}`** — {name} ({quote_str} · Reserve)"
+                )
     else:
         lines.append("- *No carrier quotes received within response window.*")
     lines.append("")
 
-    # C. Verification Evidence
-    lines.append("#### B. Cryptographic Telemetry Verification Evidence")
-    if run_ctx.rejected_candidate_ids:
-        for rejected_id in run_ctx.rejected_candidate_ids:
-            reason = run_ctx.rejection_reasons.get(rejected_id, "Failed telemetry audit")
-            candidate_offer = next((o for o in run_ctx.offers if o.carrier_id == rejected_id), None)
-            name = candidate_offer.carrier_name if candidate_offer else rejected_id
-            lines.append(
-                f"- 🔴 **REJECTED `{rejected_id}` — {name}**\n"
-                f"  Reason: {reason}\n"
-                f"  Result: Excluded from contract award. Automatic failover initiated."
-            )
-
-    if run_ctx.selected_offer:
-        verdict = run_ctx.audit_verdicts.get(run_ctx.selected_offer.carrier_id)
-        sel_name = run_ctx.selected_offer.carrier_name
-        sel_id = run_ctx.selected_offer.carrier_id
-        temp_val = verdict.recorded_temp_c if verdict and verdict.recorded_temp_c is not None else 4.2
-        lines.append(
-            f"- 🟢 **VERIFIED `{sel_id}` — {sel_name}**\n"
-            f"  Telemetry: Recorded `{temp_val:.1f}°C` (within permitted `+{request.temp_min_c:.1f}°C..+{request.temp_max_c:.1f}°C`) · Compressor ACTIVE\n"
-            f"  Integrity: Authenticated via cryptographic HMAC-SHA256 signature and fresh challenge nonce."
-        )
-
-    if not run_ctx.rejected_candidate_ids and not run_ctx.selected_offer:
-        lines.append("- *No candidates audited.*")
-    lines.append("")
-
-    # D. Decision Summary
-    lines.append("#### C. Operational Recommendation Decision")
+    # Operational Recommendation Decision
     if terminal_result.terminal_state == "RECOMMENDED_FOR_CONFIRMATION" and run_ctx.selected_offer:
         sel = run_ctx.selected_offer
         lines.append(
-            f"**Selected Award Candidate:** **{sel.carrier_name}** (`{sel.carrier_id}`)\n"
-            f"- **Contract Rate:** `₹{sel.price:,.0f} INR` (within ₹{request.max_budget:,.0f} ceiling)\n"
-            f"- **Response Window:** `{sel.eta_minutes} minutes` (within {request.deadline_minutes}m deadline)\n"
-            f"- **Selection Rationale:** Lowest-priced candidate satisfying all hard commercial constraints and fully verified sensor telemetry.\n"
-            f"- **Action Required:** Operator review and confirmation required via the card below."
+            f"**Recommendation:** Simulated award recommended for **{sel.carrier_name}** (`{sel.carrier_id}`) "
+            f"at **₹{sel.price:,.0f} INR** ({sel.eta_minutes}m ETA). "
+            f"Use the interactive cards below to inspect telemetry evidence or confirm dispatch.\n"
         )
     else:
         lines.append(
             f"**Status:** `NO_SAFE_MATCH`\n"
-            f"**Details:** Unable to find a compliant carrier matching budget, ETA, and verified sensor criteria.\n"
-            f"- **Action Required:** Operator manual intervention required or revise budget/deadline constraints."
+            f"Unable to find a compliant carrier matching budget, ETA, and verified sensor criteria. "
+            f"Operator manual intervention required or revise budget/deadline constraints.\n"
         )
-    lines.append("")
 
-    # E. Simulation Disclosure
+    # Simulation Disclosure (Clean plain text without GitHub-specific [!NOTE])
     lines.append(
-        "> [!NOTE]\n"
-        "> **Fetch-A-Thon 3.0 Simulation Disclosure:**\n"
-        "> `SIMULATION — awaiting user confirmation`\n"
-        "> Carrier quotes, sensor readings (Beta 13.8°C / Alpha 4.2°C), and cryptographic signatures are "
-        "synthetic fixtures generated for reproducible hackathon demonstration. This system does not perform "
-        "actual physical vehicle dispatch, real hardware sensor attestation, or live payment settlement."
+        "**Simulation Disclosure:** `SIMULATION — awaiting user confirmation`. "
+        "Carrier quotes, sensor readings (Beta 13.8°C / Alpha 4.2°C), and cryptographic signatures are synthetic fixtures "
+        "generated for reproducible hackathon demonstration; this system does not perform actual physical vehicle dispatch, "
+        "real hardware sensor attestation, or live payment settlement."
     )
 
     return "\n".join(lines)
@@ -410,6 +377,8 @@ def create_interactive_chat_message(
 def create_acp_chat_protocol(orchestrator: CoordinatorOrchestrator) -> Protocol:
     """Creates the official Agent Chat Protocol (ACP) for the primary coordinator agent."""
     from freightpact.cards import (
+        build_dispatch_confirmation_card,
+        build_dispatch_declination_card,
         build_final_recommendation_review_card,
         build_incident_intake_form_card,
         build_incident_overview_card,
@@ -429,7 +398,10 @@ def create_acp_chat_protocol(orchestrator: CoordinatorOrchestrator) -> Protocol:
         ack = create_chat_acknowledgement(msg.msg_id)
         await ctx.send(sender, ack)
 
-        if not user_text:
+        from freightpact.cards import strip_agent_mention
+        clean_text = strip_agent_mention(user_text)
+
+        if not clean_text:
             reply = create_text_chat_message(
                 "👋 Hello! I am **FreightPact**, your Autonomous Cold-Chain Shipment Recovery Coordinator. "
                 "Report a distressed shipment incident (e.g., reefer failure, temperature rise, location, budget) "
@@ -439,7 +411,7 @@ def create_acp_chat_protocol(orchestrator: CoordinatorOrchestrator) -> Protocol:
             return
 
         # 2. Check if this is an interactive card action return (JSON or planner prose)
-        card_action, action_data = parse_card_user_response(user_text)
+        card_action, action_data = parse_card_user_response(clean_text)
 
         # -------------------------------------------------------------
         # 2A. Card Navigation Views (Exploration without re-orchestrating)
@@ -470,13 +442,15 @@ def create_acp_chat_protocol(orchestrator: CoordinatorOrchestrator) -> Protocol:
                     ctx.logger.warning(f"[ACP] Failed to build overview card: {exc}")
                     card = None
 
+                is_conf = getattr(run_ctx, "is_confirmed", False)
+                state_display = "CONFIRMED_DISPATCHED (Simulated)" if is_conf else run_ctx.current_state.value
                 intro_text = (
                     f"📋 **Cold-Chain Incident Overview: `{req.shipment_id}`**\n\n"
                     f"- **Mission Run ID:** `{run_ctx.run_id[:16]}...`\n"
                     f"- **Cargo Class:** {req.cargo_class.value}\n"
                     f"- **Target Range:** {req.temp_min_c:.1f}°C to {req.temp_max_c:.1f}°C\n"
                     f"- **Budget Ceiling:** ₹{req.max_budget:,.0f} INR | **Deadline:** {req.deadline_minutes} mins\n"
-                    f"- **Current State:** `{run_ctx.current_state.value}`"
+                    f"- **Current State:** `{state_display}`"
                 )
                 reply_msg = create_interactive_chat_message(intro_text, metadata_card=card)
                 await ctx.send(sender, reply_msg)
@@ -539,6 +513,21 @@ def create_acp_chat_protocol(orchestrator: CoordinatorOrchestrator) -> Protocol:
                     await ctx.send(sender, reply_msg)
                     return
 
+                # If award is already confirmed, show the finalized receipt instead of re-prompting confirmation
+                if getattr(run_ctx, "is_confirmed", False):
+                    ctx.logger.info(f"[ACP] Mission {run_ctx.run_id} is already confirmed. Returning confirmation receipt.")
+                    receipt_card = build_dispatch_confirmation_card(run_ctx)
+                    reply_text = (
+                        f"✅ **Simulated Carrier Award Already Confirmed**\n\n"
+                        f"- **Shipment ID:** `{run_ctx.shipment_id}`\n"
+                        f"- **Awarded Carrier:** `{run_ctx.selected_offer.carrier_name} ({run_ctx.selected_offer.carrier_id})`\n"
+                        f"- **Mission Run ID:** `{run_ctx.run_id}`\n\n"
+                        "**Simulation Disclosure:** `SIMULATION — demonstration record already finalized`."
+                    )
+                    reply_msg = create_interactive_chat_message(reply_text, metadata_card=receipt_card)
+                    await ctx.send(sender, reply_msg)
+                    return
+
                 verdict = run_ctx.audit_verdicts.get(run_ctx.selected_offer.carrier_id)
                 recorded_temp = verdict.recorded_temp_c if verdict and verdict.recorded_temp_c is not None else 4.2
                 verdict_reason = verdict.reason if verdict else "Cryptographically verified compliant"
@@ -589,10 +578,16 @@ def create_acp_chat_protocol(orchestrator: CoordinatorOrchestrator) -> Protocol:
                     f"- **Shipment ID:** `{run_ctx.shipment_id}`\n"
                     f"- **Awarded Candidate:** `{run_ctx.selected_offer.carrier_id if run_ctx.selected_offer else 'verified'}`\n"
                     f"- **Mission Run ID:** `{run_ctx.run_id}`\n\n"
-                    "> [!NOTE]\n"
-                    "> `SIMULATION — demonstration record already finalized`"
+                    "**Simulation Disclosure:** `SIMULATION — demonstration record already finalized`."
                 )
-                reply_msg = create_interactive_chat_message(reply_text)
+                receipt_card = None
+                try:
+                    receipt_card = build_dispatch_confirmation_card(run_ctx)
+                except Exception as card_err:
+                    ctx.logger.warning(f"[ACP] Failed to build confirmation card: {card_err}")
+                if receipt_card:
+                    ctx.logger.info(f"[ACP] Attached confirmation receipt card (kind={receipt_card.metadata.get('card_kind')}, is_terminal={receipt_card.metadata.get('is_terminal')}) for {sender}")
+                reply_msg = create_interactive_chat_message(reply_text, metadata_card=receipt_card)
                 await ctx.send(sender, reply_msg)
                 return
 
@@ -635,12 +630,21 @@ def create_acp_chat_protocol(orchestrator: CoordinatorOrchestrator) -> Protocol:
                 f"- **Status:** Simulated award recorded in FreightPact demo ledger.\n"
                 f"- **Telemetry Monitoring:** Verification complete; simulated telemetry tracking active for demonstration run.\n"
                 f"- **Mission Run ID:** `{run_ctx.run_id}`\n\n"
-                "> [!NOTE]\n"
-                "> **Fetch-A-Thon 3.0 Simulation Disclosure:**\n"
-                "> `SIMULATION — demonstration record only`\n"
-                "> No physical vehicle dispatch, live hardware sensor attestation, or fiat banking settlement was performed."
+                "**Simulation Disclosure:** `SIMULATION — demonstration record only`. "
+                "No physical vehicle dispatch, live hardware sensor attestation, or fiat banking settlement was performed."
             )
-            reply_msg = create_interactive_chat_message(reply_text)
+            receipt_card = None
+            try:
+                receipt_card = build_dispatch_confirmation_card(run_ctx)
+            except Exception as card_err:
+                ctx.logger.warning(f"[ACP] Failed to build confirmation card: {card_err}")
+
+            if receipt_card:
+                ctx.logger.info(f"[ACP] Attached confirmation receipt card (kind={receipt_card.metadata.get('card_kind')}, is_terminal={receipt_card.metadata.get('is_terminal')}) for {sender}")
+            else:
+                ctx.logger.warning(f"[ACP] No confirmation receipt card attached for {sender}")
+
+            reply_msg = create_interactive_chat_message(reply_text, metadata_card=receipt_card)
             await ctx.send(sender, reply_msg)
             return
 
@@ -670,12 +674,22 @@ def create_acp_chat_protocol(orchestrator: CoordinatorOrchestrator) -> Protocol:
                 f"- **Candidate:** `{declined_id}`\n"
                 f"- **Status:** Recommendation rejected by operator. Workflow terminated safely.\n"
                 f"- **Next Steps:** You may report revised operational constraints at any time to re-run candidate evaluation.\n\n"
-                "> [!NOTE]\n"
-                "> **Fetch-A-Thon 3.0 Simulation Disclosure:**\n"
-                "> `SIMULATION — recommendation declined`\n"
-                "> State recorded in demo database. No vehicles were contacted or scheduled."
+                "**Simulation Disclosure:** `SIMULATION — recommendation declined`. "
+                "State recorded in demo database. No vehicles were contacted or scheduled."
             )
-            reply_msg = create_interactive_chat_message(reply_text)
+            declined_card = None
+            if run_ctx:
+                try:
+                    declined_card = build_dispatch_declination_card(run_ctx, carrier_id=declined_id)
+                except Exception as card_err:
+                    ctx.logger.warning(f"[ACP] Failed to build declination card: {card_err}")
+
+            if declined_card:
+                ctx.logger.info(f"[ACP] Attached declination receipt card (kind={declined_card.metadata.get('card_kind')}, is_terminal={declined_card.metadata.get('is_terminal')}) for {sender}")
+            else:
+                ctx.logger.warning(f"[ACP] No declination receipt card attached for {sender}")
+
+            reply_msg = create_interactive_chat_message(reply_text, metadata_card=declined_card)
             await ctx.send(sender, reply_msg)
             return
 
@@ -694,10 +708,10 @@ def create_acp_chat_protocol(orchestrator: CoordinatorOrchestrator) -> Protocol:
         asi_key = os.getenv("ASI_API_KEY")
         extracted_data = None
         if asi_key and asi_key.strip():
-            extracted_data = await parse_incident_with_asi1(user_text, asi_key.strip())
+            extracted_data = await parse_incident_with_asi1(clean_text, asi_key.strip())
 
         if not extracted_data:
-            extracted_data = parse_incident_fallback(user_text)
+            extracted_data = parse_incident_fallback(clean_text)
 
         # 4. Check for missing required fields
         recovery_request, error_prompt = validate_or_request_missing_fields(extracted_data)

@@ -58,3 +58,6 @@ htmlcov/
 *.swo
 *~
 .DS_Store
+
+# External research data; download separately using the documented source
+data/external/nepal_vaccine_carriers/

@@ -9,11 +9,12 @@ Persists:
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 import json
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, Generator, List, Optional
 from freightpact.models import AuditEvent, AuditVerdict, CarrierOffer, RecoveryRequest, RecoveryResult
 
 
@@ -29,13 +30,22 @@ class StorageRepository:
         self.db_path = db_path
         self._init_db()
 
-    def _get_connection(self) -> sqlite3.Connection:
+    @contextmanager
+    def _get_connection(self) -> Generator[sqlite3.Connection, None, None]:
         try:
             conn = sqlite3.connect(self.db_path)
             conn.row_factory = sqlite3.Row
-            return conn
         except Exception as exc:
             raise StorageError(f"Failed to connect to SQLite at '{self.db_path}': {exc}") from exc
+        try:
+            with conn:
+                yield conn
+        finally:
+            conn.close()
+
+    def close(self) -> None:
+        """Explicit close hook for API compatibility."""
+        pass
 
     def _init_db(self):
         """Initializes database tables and unique indexes."""

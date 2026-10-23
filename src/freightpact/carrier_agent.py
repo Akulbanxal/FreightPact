@@ -48,6 +48,7 @@ def create_carrier_agent(
     seed: Optional[str] = None,
     port: Optional[int] = None,
     enable_agent_inspector: bool = True,
+    report_events: bool = False,
 ) -> Agent:
     """Instantiates an independent carrier agent process."""
     profile = get_carrier_profile(carrier_id)
@@ -60,6 +61,7 @@ def create_carrier_agent(
         port=port,
         endpoint=[f"http://127.0.0.1:{port}/submit"] if port else None,
         enable_agent_inspector=enable_agent_inspector,
+        report_events=report_events,
     )
 
     proto = create_carrier_protocol(carrier_id)
