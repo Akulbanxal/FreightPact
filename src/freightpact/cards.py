@@ -93,55 +93,84 @@ def build_card_metadata_envelope(
 # -------------------------------------------------------------------------
 
 def build_incident_intake_form_card(partial_data: Optional[Dict[str, Any]] = None) -> MetadataContent:
-    """Builds a form card asking the operator for missing shipment constraints."""
-    fields = [
-        {
+    """Builds an ASI:One form card asking the operator strictly for missing shipment constraints.
+
+    Rules:
+    - Include only genuinely missing fields.
+    - Never present '0' as a placeholder for unknown budget or deadline.
+    - Show cargo selector only if cargo classification is actually missing.
+    - Strictly conform to official ASI:One form schema (no unsupported 'default' or 'value' attributes).
+    """
+    data = partial_data or {}
+    fields = []
+
+    # 1. Shipment Identifier (only if missing)
+    if not data.get("shipment_id"):
+        fields.append({
             "name": "shipment_id",
             "kind": "text",
             "label": "Shipment Identifier",
             "required": True,
             "placeholder": "e.g. VAX-8821",
-        },
-        {
+        })
+
+    # 2. Target Temperature Band (only if missing)
+    if data.get("temp_min_c") is None or data.get("temp_max_c") is None:
+        fields.append({
             "name": "temp_range",
             "kind": "text",
             "label": "Target Temperature Band (°C)",
             "required": True,
             "placeholder": "e.g. 2 to 8",
-        },
-        {
+        })
+
+    # 3. Budget Ceiling (only if missing or invalid)
+    budget_val = data.get("max_budget")
+    if budget_val is None or (isinstance(budget_val, (int, float)) and budget_val <= 0):
+        fields.append({
             "name": "max_budget",
             "kind": "number",
             "label": "Budget Ceiling (₹ INR)",
             "required": True,
             "placeholder": "e.g. 48000",
-        },
-        {
+        })
+
+    # 4. Recovery Deadline (only if missing or invalid)
+    deadline_val = data.get("deadline_minutes")
+    if deadline_val is None or (isinstance(deadline_val, (int, float)) and deadline_val <= 0):
+        fields.append({
             "name": "deadline_minutes",
             "kind": "number",
             "label": "Recovery Deadline (Minutes)",
             "required": True,
             "placeholder": "e.g. 45",
-        },
-        {
+        })
+
+    # 5. Cargo Classification (shown ONLY if cargo classification is actually missing)
+    if not data.get("cargo_class"):
+        fields.append({
             "name": "cargo_class",
             "kind": "select",
             "label": "Cargo Classification",
+            "required": True,
             "options": [
                 {"value": "VACCINES", "label": "Vaccines (+2.0°C to +8.0°C strict)"},
                 {"value": "PHARMA_GENERAL", "label": "General Pharmaceuticals"},
                 {"value": "BIOLOGICS", "label": "Biologics & Blood Plasma"},
                 {"value": "INSULIN", "label": "Insulin (+2.0°C to +8.0°C)"},
             ],
-        },
-    ]
+        })
+
+    selection: Dict[str, Any] = {"action": "submit_incident_intake"}
+    if data.get("shipment_id"):
+        selection["shipment_id"] = str(data["shipment_id"])
 
     payload = {
         "title": "Cold-Chain Incident Intake",
         "fields": fields,
         "submit_cta": {
             "label": "Initiate Autonomous Recovery",
-            "selection": {"action": "submit_incident_intake"},
+            "selection": selection,
         },
     }
 
@@ -671,7 +700,11 @@ def parse_card_user_response(user_text: str) -> Tuple[Optional[str], Dict[str, A
     if "review" in lower:
         return "view_award_review", {"action": "view_award_review", "raw_text": user_text}
 
-    # G. Navigation Actions: Mission Overview
+    # G. Form Intake Submission Action
+    if "submit_incident_intake" in lower or "submit intake" in lower:
+        return "submit_incident_intake", {"action": "submit_incident_intake", "raw_text": user_text}
+
+    # H. Navigation Actions: Mission Overview
     if "overview" in lower or "mission" in lower or "incident summary" in lower:
         return "view_incident_overview", {"action": "view_incident_overview", "raw_text": user_text}
 

@@ -124,20 +124,37 @@ def test_payload_exceeding_max_depth_rejected():
 # -------------------------------------------------------------------------
 
 def test_incident_intake_form_card_shape():
-    partial = {"shipment_id": "VAX-8821", "max_budget": 48000.0}
-    card = build_incident_intake_form_card(partial)
-    assert card.metadata["card_kind"] == "form"
-    assert card.metadata["requires_card_interaction"] == "true"
+    # 1. When no partial data is provided: all required fields are included
+    card_empty = build_incident_intake_form_card({})
+    assert card_empty.metadata["card_kind"] == "form"
+    assert card_empty.metadata["requires_card_interaction"] == "true"
+    payload_empty = json.loads(card_empty.metadata["card_payload"])
+    assert payload_empty["title"] == "Cold-Chain Incident Intake"
+    field_names_empty = [f["name"] for f in payload_empty["fields"]]
+    assert "shipment_id" in field_names_empty
+    assert "temp_range" in field_names_empty
+    assert "max_budget" in field_names_empty
+    assert "deadline_minutes" in field_names_empty
+    assert "cargo_class" in field_names_empty
+    assert payload_empty["submit_cta"]["selection"]["action"] == "submit_incident_intake"
 
-    payload = json.loads(card.metadata["card_payload"])
-    assert payload["title"] == "Cold-Chain Incident Intake"
-    assert len(payload["fields"]) >= 4
-    field_names = [f["name"] for f in payload["fields"]]
-    assert "shipment_id" in field_names
-    assert "temp_range" in field_names
-    assert "max_budget" in field_names
-    assert "deadline_minutes" in field_names
-    assert payload["submit_cta"]["selection"]["action"] == "submit_incident_intake"
+    # 2. When partial data contains shipment, cargo, and temp band: ONLY missing budget & deadline are requested
+    partial = {
+        "shipment_id": "VAX-8821",
+        "cargo_class": CargoClass.VACCINES,
+        "temp_min_c": 2.0,
+        "temp_max_c": 8.0,
+    }
+    card_partial = build_incident_intake_form_card(partial)
+    payload_partial = json.loads(card_partial.metadata["card_payload"])
+    field_names_partial = [f["name"] for f in payload_partial["fields"]]
+    assert field_names_partial == ["max_budget", "deadline_minutes"]
+    # Verify no misleading '0' placeholders
+    for f in payload_partial["fields"]:
+        assert f.get("placeholder") != "0"
+        assert f.get("placeholder") != "e.g. 0"
+    # Verify shipment_id is preserved in submit_cta selection
+    assert payload_partial["submit_cta"]["selection"]["shipment_id"] == "VAX-8821"
 
 
 def test_quote_comparison_carousel_card_shape(sample_request, sample_offers):

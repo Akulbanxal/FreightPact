@@ -43,6 +43,22 @@ class CoordinatorOrchestrator:
         self.completion_events: Dict[str, asyncio.Event] = {}
         # Background quote timeout tasks keyed by run_id
         self.quote_guard_tasks: Dict[str, asyncio.Task] = {}
+        # Pending partial intakes keyed by session_key (sender address or shipment_id)
+        self.pending_intakes: Dict[str, Dict[str, Any]] = {}
+
+    def save_pending_intake(self, session_key: str, data: Dict[str, Any]) -> None:
+        """Stores or merges partial incident intake parameters."""
+        current = self.pending_intakes.get(session_key, {})
+        current.update({k: v for k, v in data.items() if v is not None})
+        self.pending_intakes[session_key] = current
+
+    def get_pending_intake(self, session_key: str) -> Optional[Dict[str, Any]]:
+        """Retrieves stored partial incident intake parameters."""
+        return self.pending_intakes.get(session_key)
+
+    def clear_pending_intake(self, session_key: str) -> None:
+        """Clears partial incident intake parameters upon successful mission creation."""
+        self.pending_intakes.pop(session_key, None)
 
     def init_mission(self, request: RecoveryRequest) -> RunContext:
         """Initializes and persists a new isolated run context."""

@@ -238,28 +238,76 @@ def parse_incident_fallback(text: str) -> Dict[str, Any]:
 def validate_or_request_missing_fields(data: Dict[str, Any]) -> Tuple[Optional[RecoveryRequest], Optional[str]]:
     """Validates extracted parameters.
 
-    If required parameters are missing, returns (None, prompt_message) asking
-    for specifics instead of inventing defaults.
+    If required parameters are missing, returns (None, prompt_message) with:
+    - Concise summary of recognised fields (shipment ID, cargo class, temperature band, location)
+    - Explicit list of missing required parameters (budget, deadline, etc.)
+    Validates completed request server-side (preventing non-positive budgets or invalid temp ranges).
     """
     missing = []
     if not data.get("shipment_id"):
         missing.append("• **Shipment Identifier** (e.g. `VAX-8821`)")
     if data.get("temp_min_c") is None or data.get("temp_max_c") is None:
         missing.append("• **Target Temperature Band** (e.g. `+2°C to +8°C`)")
-    if not data.get("max_budget"):
+
+    budget_val = data.get("max_budget")
+    if budget_val is None or (isinstance(budget_val, (int, float)) and budget_val <= 0):
         missing.append("• **Maximum Budget Ceiling** in INR (e.g. `₹48,000`)")
-    if not data.get("deadline_minutes"):
+
+    deadline_val = data.get("deadline_minutes")
+    if deadline_val is None or (isinstance(deadline_val, (int, float)) and deadline_val <= 0):
         missing.append("• **Recovery Deadline** in minutes (e.g. `45 mins`)")
 
     if missing:
-        prompt = (
-            "⚠️ **FreightPact Cold-Chain Incident Intake**\n\n"
-            "I detected an active cold-chain incident report, but need the following required parameters "
-            "to initiate verified multi-agent recovery without guessing:\n\n"
-            + "\n".join(missing)
-            + "\n\nPlease reply with the missing parameters to trigger autonomous carrier discovery and telemetry verification."
-        )
+        # Build concise summary of recognised fields
+        recognised_lines = []
+        if data.get("shipment_id"):
+            recognised_lines.append(f"• **Shipment ID:** `{data['shipment_id']}`")
+        if data.get("cargo_class"):
+            cargo_name = data["cargo_class"].value.capitalize() if isinstance(data["cargo_class"], CargoClass) else str(data["cargo_class"]).capitalize()
+            recognised_lines.append(f"• **Cargo Classification:** `{cargo_name}`")
+        if data.get("temp_min_c") is not None and data.get("temp_max_c") is not None:
+            recognised_lines.append(f"• **Temperature Band:** `+{data['temp_min_c']:.1f}°C to +{data['temp_max_c']:.1f}°C`")
+        if data.get("origin_location") and data["origin_location"] != "Distressed Vehicle Location":
+            recognised_lines.append(f"• **Location:** `{data['origin_location']}`")
+        if budget_val is not None and isinstance(budget_val, (int, float)) and budget_val > 0:
+            recognised_lines.append(f"• **Budget Ceiling:** `₹{budget_val:,.0f} INR`")
+        if deadline_val is not None and isinstance(deadline_val, (int, float)) and deadline_val > 0:
+            recognised_lines.append(f"• **Recovery Deadline:** `{deadline_val} mins`")
+
+        prompt_lines = [
+            "⚠️ **FreightPact Cold-Chain Incident Intake**\n",
+            "I detected an active cold-chain incident report, but need additional required parameters to initiate verified multi-agent recovery without guessing:\n",
+        ]
+        if recognised_lines:
+            prompt_lines.append("**Recognised Incident Details:**\n" + "\n".join(recognised_lines) + "\n")
+
+        prompt_lines.append("**Missing Required Parameters:**\n" + "\n".join(missing))
+        prompt_lines.append("\nPlease submit the missing parameters using the form below or reply in chat to initiate verified multi-agent recovery.")
+        prompt = "\n".join(prompt_lines)
         return None, prompt
+
+    # All required parameters present -> Perform strict server-side validation
+    try:
+        max_budget = float(data["max_budget"])
+        if max_budget <= 0:
+            return None, "❌ Invalid budget ceiling: Maximum budget must be greater than ₹0 INR."
+    except (ValueError, TypeError):
+        return None, "❌ Invalid budget ceiling provided: Must be a positive numeric amount."
+
+    try:
+        deadline_minutes = int(data["deadline_minutes"])
+        if deadline_minutes <= 0:
+            return None, "❌ Invalid recovery deadline: Deadline must be greater than 0 minutes."
+    except (ValueError, TypeError):
+        return None, "❌ Invalid recovery deadline provided: Must be a positive integer in minutes."
+
+    try:
+        temp_min = float(data["temp_min_c"])
+        temp_max = float(data["temp_max_c"])
+        if temp_max <= temp_min:
+            return None, f"❌ Invalid temperature band: Upper bound ({temp_max:.1f}°C) must be strictly greater than lower bound ({temp_min:.1f}°C)."
+    except (ValueError, TypeError):
+        return None, "❌ Invalid temperature values provided: Must be numeric degrees Celsius."
 
     # Safe defaults for non-strict fields
     raw_cargo = data.get("cargo_class")
@@ -277,18 +325,19 @@ def validate_or_request_missing_fields(data: Dict[str, Any]) -> Tuple[Optional[R
             cargo_class = CargoClass.PHARMA_GENERAL
     else:
         cargo_class = CargoClass.VACCINES
+
     origin_location = data.get("origin_location") or "Distressed Vehicle Location"
     capacity_kg = data.get("required_capacity_kg") or 1000.0
 
     try:
         req = RecoveryRequest(
-            shipment_id=str(data["shipment_id"]),
+            shipment_id=str(data["shipment_id"]).strip().upper(),
             cargo_class=cargo_class,
             origin_location=origin_location,
-            temp_min_c=float(data["temp_min_c"]),
-            temp_max_c=float(data["temp_max_c"]),
-            max_budget=float(data["max_budget"]),
-            deadline_minutes=int(data["deadline_minutes"]),
+            temp_min_c=temp_min,
+            temp_max_c=temp_max,
+            max_budget=max_budget,
+            deadline_minutes=deadline_minutes,
             required_capacity_kg=float(capacity_kg),
         )
         return req, None
@@ -372,6 +421,77 @@ def create_interactive_chat_message(
         msg_id=uuid.uuid4(),
         timestamp=datetime.now(timezone.utc),
     )
+
+
+def _extract_form_submission_data(action_data: Dict[str, Any]) -> Dict[str, Any]:
+    """Extracts and normalizes form submission values from ASI:One card return."""
+    raw: Dict[str, Any] = {}
+    for container in ("form_values", "form_data", "values", "fields"):
+        nested = action_data.get(container)
+        if isinstance(nested, dict):
+            raw.update(nested)
+        elif isinstance(nested, list):
+            for item in nested:
+                if isinstance(item, dict) and "name" in item and "value" in item:
+                    raw[item["name"]] = item["value"]
+
+    for k, v in action_data.items():
+        if k not in {"action", "raw_text", "form_values", "form_data", "values", "fields"} and v is not None:
+            raw[k] = v
+
+    normalized: Dict[str, Any] = {}
+    if raw.get("shipment_id"):
+        normalized["shipment_id"] = str(raw["shipment_id"]).strip().upper()
+
+    if raw.get("temp_range"):
+        temp_str = str(raw["temp_range"])
+        match = re.search(r"([+-]?\d+(?:\.\d+)?)\s*(?:to|[-–—]|and)\s*([+-]?\d+(?:\.\d+)?)", temp_str)
+        if match:
+            t1, t2 = float(match.group(1)), float(match.group(2))
+            normalized["temp_min_c"] = min(t1, t2)
+            normalized["temp_max_c"] = max(t1, t2)
+    elif "temp_min_c" in raw and "temp_max_c" in raw:
+        try:
+            normalized["temp_min_c"] = float(raw["temp_min_c"])
+            normalized["temp_max_c"] = float(raw["temp_max_c"])
+        except (ValueError, TypeError):
+            pass
+
+    if raw.get("max_budget") is not None:
+        try:
+            val = str(raw["max_budget"]).replace(",", "").replace("₹", "").strip()
+            normalized["max_budget"] = float(val)
+        except (ValueError, TypeError):
+            pass
+
+    if raw.get("deadline_minutes") is not None:
+        try:
+            val = str(raw["deadline_minutes"]).replace("mins", "").replace("min", "").replace("m", "").strip()
+            normalized["deadline_minutes"] = int(val)
+        except (ValueError, TypeError):
+            pass
+
+    if raw.get("cargo_class"):
+        val = str(raw["cargo_class"]).upper()
+        if "VACCINE" in val:
+            normalized["cargo_class"] = CargoClass.VACCINES
+        elif "BIOLOGIC" in val:
+            normalized["cargo_class"] = CargoClass.BIOLOGICS
+        elif "INSULIN" in val:
+            normalized["cargo_class"] = CargoClass.INSULIN
+        else:
+            normalized["cargo_class"] = CargoClass.PHARMA_GENERAL
+
+    if raw.get("origin_location"):
+        normalized["origin_location"] = str(raw["origin_location"]).strip()
+
+    if raw.get("required_capacity_kg"):
+        try:
+            normalized["required_capacity_kg"] = float(raw["required_capacity_kg"])
+        except (ValueError, TypeError):
+            pass
+
+    return normalized
 
 
 def create_acp_chat_protocol(orchestrator: CoordinatorOrchestrator) -> Protocol:
@@ -704,6 +824,85 @@ def create_acp_chat_protocol(orchestrator: CoordinatorOrchestrator) -> Protocol:
             await ctx.send(sender, reply_msg)
             return
 
+        async def _run_recovery_mission(req: RecoveryRequest):
+            run_ctx = orchestrator.init_mission(req)
+            await orchestrator.broadcast_quote_requests(ctx, req.run_id)
+
+            # Wait for completion or timeout
+            if req.run_id in orchestrator.completion_events:
+                try:
+                    await asyncio.wait_for(
+                        orchestrator.completion_events[req.run_id].wait(),
+                        timeout=12.0,
+                    )
+                except asyncio.TimeoutError:
+                    ctx.logger.error(f"[ACP] Orchestration timed out for run {req.run_id}")
+                    run_ctx.transition_to(WorkflowState.NO_SAFE_MATCH, reason="Orchestrator timeout")
+
+            # Build real terminal outcome
+            terminal_result = run_ctx.build_terminal_result()
+            response_text = format_recovery_response(req, run_ctx, terminal_result)
+
+            # Attach Interactive Card based on outcome (Default to Step 1: Incident Overview with interactive CTA)
+            initial_card = None
+            try:
+                initial_card = build_incident_overview_card(
+                    request=req,
+                    run_ctx=run_ctx,
+                    terminal_result=terminal_result,
+                )
+            except Exception as card_err:
+                ctx.logger.warning(f"[ACP] Failed to generate initial overview card: {card_err}. Using plain-text fallback.")
+
+            if initial_card:
+                ctx.logger.info(f"[ACP] Attaching multi-step interactive card (kind={initial_card.metadata.get('card_kind')}) to response for {sender}")
+            else:
+                ctx.logger.warning(f"[ACP] No interactive card attached for mission {req.run_id}")
+
+            reply_msg = create_interactive_chat_message(response_text, metadata_card=initial_card)
+            await ctx.send(sender, reply_msg)
+
+        if card_action == "submit_incident_intake":
+            ctx.logger.info(f"[ACP] Form action 'submit_incident_intake' received from {sender}")
+            submitted = _extract_form_submission_data(action_data)
+
+            # Retrieve existing pending intake for this sender or shipment
+            shipment_id = submitted.get("shipment_id") or action_data.get("shipment_id")
+            pending = dict(orchestrator.get_pending_intake(sender) or {})
+            if not pending and shipment_id:
+                pending = dict(orchestrator.get_pending_intake(shipment_id) or {})
+
+            # Merge existing pending data with newly submitted form data
+            pending.update({k: v for k, v in submitted.items() if v is not None})
+
+            # Server-side validation
+            recovery_request, error_prompt = validate_or_request_missing_fields(pending)
+            if error_prompt:
+                # Still missing fields or invalid values -> save partial and re-render form
+                orchestrator.save_pending_intake(sender, pending)
+                if shipment_id:
+                    orchestrator.save_pending_intake(shipment_id, pending)
+
+                form_card = None
+                try:
+                    form_card = build_incident_intake_form_card(pending)
+                except Exception as card_err:
+                    ctx.logger.warning(f"[ACP] Failed to build form card: {card_err}")
+
+                reply_msg = create_interactive_chat_message(error_prompt, metadata_card=form_card)
+                await ctx.send(sender, reply_msg)
+                return
+
+            # All required fields are valid! Clear pending intake
+            orchestrator.clear_pending_intake(sender)
+            if shipment_id:
+                orchestrator.clear_pending_intake(shipment_id)
+            if recovery_request.shipment_id:
+                orchestrator.clear_pending_intake(recovery_request.shipment_id)
+
+            await _run_recovery_mission(recovery_request)
+            return
+
         # 3. Parse intent via ASI:One if configured, else deterministic fallback
         asi_key = os.getenv("ASI_API_KEY")
         extracted_data = None
@@ -713,9 +912,23 @@ def create_acp_chat_protocol(orchestrator: CoordinatorOrchestrator) -> Protocol:
         if not extracted_data:
             extracted_data = parse_incident_fallback(clean_text)
 
+        # Merge with pending intake for this sender if one exists
+        pending = orchestrator.get_pending_intake(sender)
+        if pending:
+            new_ship = extracted_data.get("shipment_id")
+            old_ship = pending.get("shipment_id")
+            if not new_ship or not old_ship or new_ship == old_ship:
+                merged = dict(pending)
+                merged.update({k: v for k, v in extracted_data.items() if v is not None})
+                extracted_data = merged
+
         # 4. Check for missing required fields
         recovery_request, error_prompt = validate_or_request_missing_fields(extracted_data)
         if error_prompt:
+            orchestrator.save_pending_intake(sender, extracted_data)
+            if extracted_data.get("shipment_id"):
+                orchestrator.save_pending_intake(extracted_data["shipment_id"], extracted_data)
+
             # Build interactive form card to prompt user directly in ASI:One UI
             form_card = None
             try:
@@ -727,44 +940,13 @@ def create_acp_chat_protocol(orchestrator: CoordinatorOrchestrator) -> Protocol:
             await ctx.send(sender, reply)
             return
 
+        # Clear pending intake once validated
+        orchestrator.clear_pending_intake(sender)
+        if extracted_data.get("shipment_id"):
+            orchestrator.clear_pending_intake(extracted_data["shipment_id"])
+
         # 5. Initialize and run recovery mission
-        run_ctx = orchestrator.init_mission(recovery_request)
-        await orchestrator.broadcast_quote_requests(ctx, recovery_request.run_id)
-
-        # Wait for completion or timeout
-        if recovery_request.run_id in orchestrator.completion_events:
-            try:
-                await asyncio.wait_for(
-                    orchestrator.completion_events[recovery_request.run_id].wait(),
-                    timeout=12.0,
-                )
-            except asyncio.TimeoutError:
-                ctx.logger.error(f"[ACP] Orchestration timed out for run {recovery_request.run_id}")
-                run_ctx.transition_to(WorkflowState.NO_SAFE_MATCH, reason="Orchestrator timeout")
-
-        # 6. Build real terminal outcome
-        terminal_result = run_ctx.build_terminal_result()
-        response_text = format_recovery_response(recovery_request, run_ctx, terminal_result)
-
-        # 7. Attach Interactive Card based on outcome (Default to Step 1: Incident Overview with interactive CTA)
-        initial_card = None
-        try:
-            initial_card = build_incident_overview_card(
-                request=recovery_request,
-                run_ctx=run_ctx,
-                terminal_result=terminal_result,
-            )
-        except Exception as card_err:
-            ctx.logger.warning(f"[ACP] Failed to generate initial overview card: {card_err}. Using plain-text fallback.")
-
-        # 8. Send response back to user with optional card attachment
-        if initial_card:
-            ctx.logger.info(f"[ACP] Attaching multi-step interactive card (kind={initial_card.metadata.get('card_kind')}) to response for {sender}")
-        else:
-            ctx.logger.warning(f"[ACP] No interactive card attached for mission {recovery_request.run_id}")
-
-        reply_msg = create_interactive_chat_message(response_text, metadata_card=initial_card)
-        await ctx.send(sender, reply_msg)
+        await _run_recovery_mission(recovery_request)
 
     @proto.on_message(model=ChatAcknowledgement)
     async def handle_chat_ack(ctx: Context, sender: str, msg: ChatAcknowledgement):

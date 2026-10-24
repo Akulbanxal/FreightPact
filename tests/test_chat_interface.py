@@ -153,7 +153,7 @@ async def test_acp_chat_handler_missing_fields_emits_ack_and_prompt():
 
     class MockContext:
         def __init__(self):
-            self.logger = type("L", (), {"info": lambda *a: None, "warning": lambda *a: None, "error": lambda *a: None})()
+            self.logger = type("L", (), {"info": lambda *a: print("LOG INFO:", *a), "warning": lambda *a: print("LOG WARN:", *a), "error": lambda *a: print("LOG ERR:", *a)})()
             self.sent_messages = []
 
         async def send(self, destination, message):
@@ -197,7 +197,7 @@ async def test_acp_chat_handler_full_incident_without_explicit_cargo_class_regre
 
     class MockContext:
         def __init__(self):
-            self.logger = type("L", (), {"info": lambda *a: None, "warning": lambda *a: None, "error": lambda *a: None})()
+            self.logger = type("L", (), {"info": lambda *a: print("LOG INFO:", *a), "warning": lambda *a: print("LOG WARN:", *a), "error": lambda *a: print("LOG ERR:", *a)})()
             self.sent_messages = []
 
         async def send(self, destination, message):
@@ -290,7 +290,7 @@ async def test_acp_chat_handler_navigation_actions_round_trip():
 
     class MockContext:
         def __init__(self):
-            self.logger = type("L", (), {"info": lambda *a: None, "warning": lambda *a: None, "error": lambda *a: None})()
+            self.logger = type("L", (), {"info": lambda *a: print("LOG INFO:", *a), "warning": lambda *a: print("LOG WARN:", *a), "error": lambda *a: print("LOG ERR:", *a)})()
             self.sent_messages = []
 
         async def send(self, destination, message):
@@ -444,7 +444,7 @@ async def test_observed_incident_message_triggers_recovery_not_mission_not_found
 
     class MockContext:
         def __init__(self):
-            self.logger = type("L", (), {"info": lambda *a: None, "warning": lambda *a: None, "error": lambda *a: None})()
+            self.logger = type("L", (), {"info": lambda *a: print("LOG INFO:", *a), "warning": lambda *a: print("LOG WARN:", *a), "error": lambda *a: print("LOG ERR:", *a)})()
             self.sent_messages = []
 
         async def send(self, destination, message):
@@ -471,4 +471,288 @@ async def test_observed_incident_message_triggers_recovery_not_mission_not_found
     card_contents = [c for c in reply.content if isinstance(c, MetadataContent)]
     assert len(card_contents) == 1
     assert card_contents[0].metadata["card_kind"] == "detail"
+
+
+def test_validate_or_request_missing_fields_strict_server_validation():
+    """Validates strict server-side rules: budget > 0, deadline > 0, temp_max > temp_min."""
+    base_data = {
+        "shipment_id": "VAX-8821",
+        "cargo_class": CargoClass.VACCINES,
+        "origin_location": "Sector 18 Gurugram",
+        "temp_min_c": 2.0,
+        "temp_max_c": 8.0,
+        "max_budget": 48000.0,
+        "deadline_minutes": 45,
+    }
+
+    # 1. Budget <= 0 rejected
+    zero_budget = dict(base_data, max_budget=0)
+    req, err = validate_or_request_missing_fields(zero_budget)
+    assert req is None
+    assert "Maximum Budget Ceiling" in err or "Invalid budget ceiling" in err
+
+    neg_budget = dict(base_data, max_budget=-500)
+    req, err = validate_or_request_missing_fields(neg_budget)
+    assert req is None
+    assert "Maximum Budget Ceiling" in err or "Invalid budget ceiling" in err
+
+    # 2. Deadline <= 0 rejected
+    zero_deadline = dict(base_data, deadline_minutes=0)
+    req, err = validate_or_request_missing_fields(zero_deadline)
+    assert req is None
+    assert "Recovery Deadline" in err or "Invalid recovery deadline" in err
+
+    neg_deadline = dict(base_data, deadline_minutes=-10)
+    req, err = validate_or_request_missing_fields(neg_deadline)
+    assert req is None
+    assert "Recovery Deadline" in err or "Invalid recovery deadline" in err
+
+    # 3. temp_max <= temp_min rejected
+    inverted_temp = dict(base_data, temp_min_c=8.0, temp_max_c=2.0)
+    req, err = validate_or_request_missing_fields(inverted_temp)
+    assert req is None
+    assert "Invalid temperature band" in err
+
+    equal_temp = dict(base_data, temp_min_c=5.0, temp_max_c=5.0)
+    req, err = validate_or_request_missing_fields(equal_temp)
+    assert req is None
+    assert "Invalid temperature band" in err
+
+    # 4. Recognized details displayed when only budget & deadline are missing
+    partial_data = {
+        "shipment_id": "VAX-8821",
+        "cargo_class": CargoClass.VACCINES,
+        "origin_location": "Sector 18 Gurugram",
+        "temp_min_c": 2.0,
+        "temp_max_c": 8.0,
+    }
+    req, prompt = validate_or_request_missing_fields(partial_data)
+    assert req is None
+    assert prompt is not None
+    assert "Recognised Incident Details:" in prompt
+    assert "VAX-8821" in prompt
+    assert "Vaccines" in prompt
+    assert "+2.0°C to +8.0°C" in prompt
+    assert "Sector 18 Gurugram" in prompt
+    assert "Maximum Budget Ceiling" in prompt
+    assert "Recovery Deadline" in prompt
+    assert "Shipment Identifier" not in prompt  # Since shipment_id was already present!
+
+
+@pytest.mark.asyncio
+async def test_acp_chat_handler_missing_fields_attaches_filtered_form_card():
+    """Verifies that the form card asks ONLY for missing parameters and never includes 0 placeholders."""
+    import json
+    from freightpact.chat_interface import create_acp_chat_protocol
+    from freightpact.coordinator_agent import CoordinatorOrchestrator
+    from freightpact.storage import StorageRepository
+    from uagents_core.contrib.protocols.chat import MetadataContent
+
+    orchestrator = CoordinatorOrchestrator(
+        auditor_address="auditor",
+        carrier_addresses={"carrier_alpha": "alpha"},
+        storage=StorageRepository(":memory:"),
+    )
+    proto = create_acp_chat_protocol(orchestrator)
+    msg_handler = proto._signed_message_handlers[ChatMessage.build_schema_digest(ChatMessage)]
+
+    class MockContext:
+        def __init__(self):
+            self.logger = type("L", (), {"info": lambda *a: None, "warning": lambda *a: None, "error": lambda *a: None})()
+            self.sent_messages = []
+
+        async def send(self, destination, message):
+            self.sent_messages.append((destination, message))
+
+    mock_ctx = MockContext()
+    # Message provides shipment_id, cargo (vaccine), origin location, and temp band, but lacks budget and deadline
+    user_msg = create_text_chat_message(
+        "Urgent! Vaccine shipment VAX-8821 near Sector 18 Gurugram has broken down. Required temp is 2 to 8 C."
+    )
+    sender_addr = "agent1qtestsessionsender99"
+    await msg_handler(mock_ctx, sender_addr, user_msg)
+
+    assert len(mock_ctx.sent_messages) == 2
+    reply_msg = mock_ctx.sent_messages[1][1]
+    assert "Recognised Incident Details:" in reply_msg.text()
+    assert "Maximum Budget Ceiling" in reply_msg.text()
+    assert "Recovery Deadline" in reply_msg.text()
+
+    card_meta = [c for c in reply_msg.content if isinstance(c, MetadataContent)][0]
+    assert card_meta.metadata["card_kind"] == "form"
+    payload = json.loads(card_meta.metadata["card_payload"])
+
+    field_names = [f["name"] for f in payload["fields"]]
+    assert "max_budget" in field_names
+    assert "deadline_minutes" in field_names
+    # Filtered out because already known:
+    assert "shipment_id" not in field_names
+    assert "temp_range" not in field_names
+    assert "cargo_class" not in field_names
+
+    # Verify placeholders are examples and NEVER '0'
+    for f in payload["fields"]:
+        assert f.get("placeholder") != "0"
+        assert f.get("placeholder") != "e.g. 0"
+
+
+@pytest.mark.asyncio
+async def test_acp_chat_handler_form_submission_merges_and_triggers_recovery():
+    """Tests submitting the interactive form card with missing budget and deadline."""
+    import json
+    from freightpact.chat_interface import create_acp_chat_protocol
+    from freightpact.coordinator_agent import CoordinatorOrchestrator
+    from freightpact.storage import StorageRepository
+    from uagents_core.contrib.protocols.chat import MetadataContent
+
+    orchestrator = CoordinatorOrchestrator(
+        auditor_address="auditor",
+        carrier_addresses={"carrier_alpha": "alpha"},
+        storage=StorageRepository(":memory:"),
+        quote_timeout_seconds=0.1,
+    )
+    proto = create_acp_chat_protocol(orchestrator)
+    msg_handler = proto._signed_message_handlers[ChatMessage.build_schema_digest(ChatMessage)]
+
+    class MockContext:
+        def __init__(self):
+            self.logger = type("L", (), {"info": lambda *a: None, "warning": lambda *a: None, "error": lambda *a: None})()
+            self.sent_messages = []
+
+        async def send(self, destination, message):
+            self.sent_messages.append((destination, message))
+
+    sender_addr = "agent1qtestformflowsender77"
+
+    # Step 1: User provides partial report
+    mock_ctx1 = MockContext()
+    msg1 = create_text_chat_message("Vaccine shipment VAX-8821 near Sector 18 Gurugram temp 2 to 8 C")
+    await msg_handler(mock_ctx1, sender_addr, msg1)
+
+    # Verify pending intake saved
+    pending = orchestrator.get_pending_intake(sender_addr)
+    assert pending is not None
+    assert pending.get("shipment_id") == "VAX-8821"
+
+    # Step 2: User submits the missing fields via form CTA action
+    mock_ctx2 = MockContext()
+    form_submission = {
+        "action": "submit_incident_intake",
+        "shipment_id": "VAX-8821",
+        "max_budget": "48000",
+        "deadline_minutes": "45",
+    }
+    msg2 = create_text_chat_message(json.dumps(form_submission))
+    await msg_handler(mock_ctx2, sender_addr, msg2)
+
+    # Verify pending intake cleared
+    assert orchestrator.get_pending_intake(sender_addr) is None
+
+    # Verify recovery mission started and completed
+    assert len(orchestrator.runs) == 1
+    run_ctx = list(orchestrator.runs.values())[0]
+    assert run_ctx.shipment_id == "VAX-8821"
+    assert run_ctx.request.max_budget == 48000.0
+    assert run_ctx.request.deadline_minutes == 45
+
+    # Overview card attached
+    reply2 = mock_ctx2.sent_messages[-1][1]
+    assert "FreightPact Cold-Chain Recovery Report" in reply2.text()
+    card_meta = [c for c in reply2.content if isinstance(c, MetadataContent)][0]
+    assert card_meta.metadata["card_kind"] == "detail"
+
+
+@pytest.mark.asyncio
+async def test_acp_chat_handler_chat_followup_merges_and_triggers_recovery():
+    """Tests providing missing parameters via natural language chat follow-up."""
+    from freightpact.chat_interface import create_acp_chat_protocol
+    from freightpact.coordinator_agent import CoordinatorOrchestrator
+    from freightpact.storage import StorageRepository
+
+    orchestrator = CoordinatorOrchestrator(
+        auditor_address="auditor",
+        carrier_addresses={"carrier_alpha": "alpha"},
+        storage=StorageRepository(":memory:"),
+        quote_timeout_seconds=0.1,
+    )
+    proto = create_acp_chat_protocol(orchestrator)
+    msg_handler = proto._signed_message_handlers[ChatMessage.build_schema_digest(ChatMessage)]
+
+    class MockContext:
+        def __init__(self):
+            self.logger = type("L", (), {"info": lambda *a: None, "warning": lambda *a: None, "error": lambda *a: None})()
+            self.sent_messages = []
+
+        async def send(self, destination, message):
+            self.sent_messages.append((destination, message))
+
+    sender_addr = "agent1qtestfollowupsender88"
+
+    # Step 1: User provides partial report
+    mock_ctx1 = MockContext()
+    msg1 = create_text_chat_message("Shipment VAX-8821 temp 2 to 8 C")
+    await msg_handler(mock_ctx1, sender_addr, msg1)
+    assert orchestrator.get_pending_intake(sender_addr) is not None
+
+    # Step 2: User follows up with budget and deadline in chat
+    mock_ctx2 = MockContext()
+    msg2 = create_text_chat_message("Budget is ₹48,000 and deadline is 45 minutes")
+    await msg_handler(mock_ctx2, sender_addr, msg2)
+
+    # Mission initiated
+    assert orchestrator.get_pending_intake(sender_addr) is None
+    assert len(orchestrator.runs) == 1
+    run_ctx = list(orchestrator.runs.values())[0]
+    assert run_ctx.shipment_id == "VAX-8821"
+    assert run_ctx.request.max_budget == 48000.0
+    assert run_ctx.request.deadline_minutes == 45
+
+
+@pytest.mark.asyncio
+async def test_acp_chat_handler_invalid_form_submission_rejected():
+    """Tests that submitting 0 or negative budget via form is rejected and re-renders form card."""
+    import json
+    from freightpact.chat_interface import create_acp_chat_protocol
+    from freightpact.coordinator_agent import CoordinatorOrchestrator
+    from freightpact.storage import StorageRepository
+    from uagents_core.contrib.protocols.chat import MetadataContent
+
+    orchestrator = CoordinatorOrchestrator(
+        auditor_address="auditor",
+        carrier_addresses={"carrier_alpha": "alpha"},
+        storage=StorageRepository(":memory:"),
+    )
+    proto = create_acp_chat_protocol(orchestrator)
+    msg_handler = proto._signed_message_handlers[ChatMessage.build_schema_digest(ChatMessage)]
+
+    class MockContext:
+        def __init__(self):
+            self.logger = type("L", (), {"info": lambda *a: None, "warning": lambda *a: None, "error": lambda *a: None})()
+            self.sent_messages = []
+
+        async def send(self, destination, message):
+            self.sent_messages.append((destination, message))
+
+    sender_addr = "agent1qtestinvalidsender55"
+
+    # Step 1: Initial partial intake
+    mock_ctx1 = MockContext()
+    msg1 = create_text_chat_message("Shipment VAX-8821 temp 2 to 8 C")
+    await msg_handler(mock_ctx1, sender_addr, msg1)
+
+    # Step 2: Form submission with budget 0
+    mock_ctx2 = MockContext()
+    msg2 = create_text_chat_message(
+        json.dumps({"action": "submit_incident_intake", "shipment_id": "VAX-8821", "max_budget": "0", "deadline_minutes": "45"})
+    )
+    await msg_handler(mock_ctx2, sender_addr, msg2)
+
+    # Must NOT have created a run
+    assert len(orchestrator.runs) == 0
+
+    reply2 = mock_ctx2.sent_messages[1][1]
+    assert "Maximum Budget Ceiling" in reply2.text() or "Invalid budget ceiling" in reply2.text()
+    card_meta = [c for c in reply2.content if isinstance(c, MetadataContent)][0]
+    assert card_meta.metadata["card_kind"] == "form"
+
 
